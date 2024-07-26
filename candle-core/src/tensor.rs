@@ -8,7 +8,7 @@ use crate::{bail, storage::Storage, DType, Device, Error, Layout, Result, Shape}
 use std::sync::{Arc, RwLock};
 
 /// Unique identifier for tensors.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Ord, PartialOrd, PartialEq, Eq, Hash)]
 pub struct TensorId(usize);
 
 impl TensorId {
