@@ -41,6 +41,11 @@ pub struct Tensor_ {
     dtype: DType,
     device: Device,
 }
+impl Drop for Tensor_ {
+    fn drop(&mut self) {
+        TensorTracker::instance().add_deletion(self.id);
+    }
+}
 
 impl AsRef<Tensor> for Tensor {
     fn as_ref(&self) -> &Tensor {
@@ -155,6 +160,47 @@ macro_rules! broadcast_binary_op {
     };
 }
 
+#[derive(Clone, Debug)]
+pub struct TrackedTensor {
+    pub id: TensorId,
+    pub shape: Shape,
+    pub dtype: DType,
+    pub creation: String,
+    pub deletion: Option<String>,
+}
+pub struct TensorTracker {
+    data: std::sync::Mutex<std::collections::HashMap<TensorId, TrackedTensor>>,
+}
+impl TensorTracker {
+    pub fn instance() -> &'static Self {
+        static ARRAY: std::sync::OnceLock<TensorTracker> = std::sync::OnceLock::new();
+        ARRAY.get_or_init(|| TensorTracker::new())
+    }
+    pub fn new() -> Self {
+        Self {
+            data: std::sync::Mutex::new(Default::default()),
+        }
+    }
+    pub fn add_creation(&self, id: TensorId, shape: Shape, dtype: DType) {
+        let mut c = self.data.lock().unwrap();
+        c.insert(id, TrackedTensor {
+            id,
+            shape,
+            dtype,
+            creation: format!("{:}", std::backtrace::Backtrace::force_capture()),
+            deletion: None,
+        });
+    }
+    pub fn add_deletion(&self, id: TensorId) {
+        let mut c = self.data.lock().unwrap();
+        let bt = format!("{:}", std::backtrace::Backtrace::force_capture());
+        c.get_mut(&id).expect("any deleted tensor must be created").deletion = Some(bt);
+    }
+    pub fn data(&self) -> &std::sync::Mutex<std::collections::HashMap<TensorId, TrackedTensor>> {
+        &self.data
+    }
+}
+
 /// Creates a fresh tensor structure based on a storage and a shape, this uses contiguous strides.
 pub(crate) fn from_storage<S: Into<Shape>>(
     storage: Storage,
@@ -164,8 +210,12 @@ pub(crate) fn from_storage<S: Into<Shape>>(
 ) -> Tensor {
     let dtype = storage.dtype();
     let device = storage.device();
+    let id = TensorId::new();
+    let shape : Shape = shape.into();
+
+    TensorTracker::instance().add_creation(id, shape.clone(), dtype);
     let tensor_ = Tensor_ {
-        id: TensorId::new(),
+        id,
         storage: Arc::new(RwLock::new(storage)),
         layout: Layout::contiguous(shape),
         op,
@@ -758,8 +808,10 @@ impl Tensor {
         } else {
             let op = BackpropOp::new1(self, |t| Op::Narrow(t, dim, start, len));
             let layout = self.layout().narrow(dim, start, len)?;
+            let id = TensorId::new();
+            TensorTracker::instance().add_creation(id, layout.shape().clone(), self.dtype);
             let tensor_ = Tensor_ {
-                id: TensorId::new(),
+                id,
                 storage: self.storage.clone(),
                 layout,
                 op,
@@ -1833,10 +1885,13 @@ impl Tensor {
             return Ok(self.clone());
         }
         let op = BackpropOp::new1(self, |t| Op::Transpose(t, dim1, dim2));
+        let id = TensorId::new();
+        let layout = self.layout.transpose(dim1, dim2)?;
+        TensorTracker::instance().add_creation(id, self.layout.shape().clone(), self.dtype);
         let tensor_ = Tensor_ {
-            id: TensorId::new(),
+            id,
             storage: self.storage.clone(),
-            layout: self.layout.transpose(dim1, dim2)?,
+            layout,
             op,
             is_variable: false,
             dtype: self.dtype,
@@ -1869,10 +1924,13 @@ impl Tensor {
             )
         }
         let op = BackpropOp::new1(self, |t| Op::Permute(t, dims.clone()));
+        let id = TensorId::new();
+        let layout = self.layout.permute(&dims)?;
+        TensorTracker::instance().add_creation(id, layout.shape().clone(), self.dtype);
         let tensor_ = Tensor_ {
-            id: TensorId::new(),
+            id,
             storage: self.storage.clone(),
-            layout: self.layout.permute(&dims)?,
+            layout,
             op,
             is_variable: false,
             dtype: self.dtype,
@@ -1895,8 +1953,10 @@ impl Tensor {
     /// memory.
     pub fn copy(&self) -> Result<Tensor> {
         let op = BackpropOp::new1(self, Op::Copy);
+        let id = TensorId::new();
+        TensorTracker::instance().add_creation(id, self.layout.shape().clone(), self.dtype);
         let tensor_ = Tensor_ {
-            id: TensorId::new(),
+            id,
             storage: Arc::new(RwLock::new(self.storage().try_clone(self.layout())?)),
             layout: self.layout.clone(),
             op,
@@ -1915,8 +1975,10 @@ impl Tensor {
         if self.op.is_none() && !self.is_variable {
             self.clone()
         } else {
+            let id = TensorId::new();
+            TensorTracker::instance().add_creation(id, self.layout.shape().clone(), self.dtype);
             let tensor_ = Tensor_ {
-                id: TensorId::new(),
+                id,
                 storage: self.storage.clone(),
                 layout: self.layout.clone(),
                 op: BackpropOp::none(),
@@ -1954,8 +2016,10 @@ impl Tensor {
                 }
             };
             let op = BackpropOp::new1(self, Op::ToDevice);
+            let id = TensorId::new();
+            TensorTracker::instance().add_creation(id, self.layout.shape().clone(), self.dtype);
             let tensor_ = Tensor_ {
-                id: TensorId::new(),
+                id,
                 storage: Arc::new(RwLock::new(storage)),
                 layout: self.layout.clone(),
                 op,
@@ -1984,10 +2048,13 @@ impl Tensor {
     /// any value, the dimension `t_a` must be equal to `i_a` if `i_a` is different from 1. If
     /// `i_a` is equal to 1, any value can be used.
     pub fn broadcast_as<S: Into<Shape>>(&self, shape: S) -> Result<Self> {
+        let id =TensorId::new();
+        let layout = self.layout.broadcast_as(shape)?;
+        TensorTracker::instance().add_creation(id, layout.shape().clone(), self.dtype);
         let tensor_ = Tensor_ {
-            id: TensorId::new(),
+            id,
             storage: self.storage.clone(),
-            layout: self.layout.broadcast_as(shape)?,
+            layout,
             op: BackpropOp::new1(self, Op::Broadcast),
             is_variable: false,
             dtype: self.dtype,
@@ -2093,10 +2160,13 @@ impl Tensor {
         }
         let op = BackpropOp::new1(self, Op::Reshape);
         if self.is_contiguous() {
+            let id = TensorId::new();
+            let layout = Layout::contiguous_with_offset(shape, self.layout.start_offset());
+            TensorTracker::instance().add_creation(id, layout.shape().clone(), self.dtype);
             let tensor_ = Tensor_ {
-                id: TensorId::new(),
+                id,
                 storage: self.storage.clone(),
-                layout: Layout::contiguous_with_offset(shape, self.layout.start_offset()),
+                layout,
                 op,
                 is_variable: false,
                 dtype: self.dtype,
@@ -2134,10 +2204,13 @@ impl Tensor {
             let mut strides = self.stride().to_vec();
             dims.remove(dim);
             strides.remove(dim);
+            let layout = Layout::new(dims.into(), strides, self.layout.start_offset());
+            let id = TensorId::new();
+            TensorTracker::instance().add_creation(id, layout.shape().clone(), self.dtype);
             let tensor_ = Tensor_ {
-                id: TensorId::new(),
+                id,
                 storage: self.storage.clone(),
-                layout: Layout::new(dims.into(), strides, self.layout.start_offset()),
+                layout,
                 op: BackpropOp::new1(self, Op::Reshape),
                 is_variable: false,
                 dtype: self.dtype,
@@ -2172,10 +2245,13 @@ impl Tensor {
         // C contiguous.
         let stride = if dim < strides.len() { strides[dim] } else { 1 };
         strides.insert(dim, stride);
+        let id = TensorId::new();
+        let layout = Layout::new(dims.into(), strides, self.layout.start_offset());
+        TensorTracker::instance().add_creation(id, layout.shape().clone(), self.dtype);
         let tensor_ = Tensor_ {
-            id: TensorId::new(),
+            id,
             storage: self.storage.clone(),
-            layout: Layout::new(dims.into(), strides, self.layout.start_offset()),
+            layout,
             op: BackpropOp::new1(self, Op::Reshape),
             is_variable: false,
             dtype: self.dtype,
