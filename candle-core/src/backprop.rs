@@ -187,7 +187,7 @@ impl Tensor {
             if node.is_variable() {
                 continue;
             }
-            println!("Remove node: {:?} {:?}", node.id(), node);
+            println!("[ {:} ] Remove node: {:?} {:?}", get_vram()?, node.id(), node);
             let grad = grads
                 .remove(node)
                 .expect("candle internal error - grad not populated");
@@ -202,32 +202,40 @@ impl Tensor {
             if let Some(op) = node.op() {
                 match op {
                     Op::Binary(lhs, rhs, BinaryOp::Add) => {
+                        println!("[ {:} ] Start of Op::Add", get_vram()?);
                         let lhs_sum_grad = grads.or_insert(lhs)?;
                         *lhs_sum_grad = lhs_sum_grad.add(&grad)?;
                         let rhs_sum_grad = grads.or_insert(rhs)?;
                         *rhs_sum_grad = rhs_sum_grad.add(&grad)?;
+                        println!("[ {:} ] End of Op::Add", get_vram()?);
                     }
                     Op::Binary(lhs, rhs, BinaryOp::Sub) => {
+                        println!("[ {:} ] Start of Op::Sub", get_vram()?);
                         let lhs_sum_grad = grads.or_insert(lhs)?;
                         *lhs_sum_grad = lhs_sum_grad.add(&grad)?;
                         let rhs_sum_grad = grads.or_insert(rhs)?;
                         *rhs_sum_grad = rhs_sum_grad.sub(&grad)?;
+                        println!("[ {:} ] End of Op::Sub", get_vram()?);
                     }
                     Op::Binary(lhs, rhs, BinaryOp::Mul) => {
+                        println!("[ {:} ] Start of Op::Mul", get_vram()?);
                         let lhs_grad = grad.mul(rhs)?;
                         let lhs_sum_grad = grads.or_insert(lhs)?;
                         *lhs_sum_grad = lhs_sum_grad.add(&lhs_grad)?;
                         let rhs_grad = grad.mul(lhs)?;
                         let rhs_sum_grad = grads.or_insert(rhs)?;
                         *rhs_sum_grad = rhs_sum_grad.add(&rhs_grad)?;
+                        println!("[ {:} ] End of Op::Mul", get_vram()?);
                     }
                     Op::Binary(lhs, rhs, BinaryOp::Div) => {
+                        println!("[ {:} ] Start of Op::Div", get_vram()?);
                         let lhs_grad = grad.div(rhs)?;
                         let lhs_sum_grad = grads.or_insert(lhs)?;
                         *lhs_sum_grad = lhs_sum_grad.add(&lhs_grad)?;
                         let rhs_grad = grad.mul(lhs)?.div(&rhs.sqr()?)?;
                         let rhs_sum_grad = grads.or_insert(rhs)?;
                         *rhs_sum_grad = rhs_sum_grad.sub(&rhs_grad)?;
+                        println!("[ {:} ] End of Op::Div", get_vram()?);
                     }
                     Op::Binary(lhs, rhs, BinaryOp::Minimum)
                     | Op::Binary(lhs, rhs, BinaryOp::Maximum) => {
@@ -299,7 +307,7 @@ impl Tensor {
                         stride,
                         dilation,
                     } => {
-                        println!("[ {:} ] Start of conv2d", get_vram()?);
+                        println!("[ {:} ] Start of Op::Conv2D", get_vram()?);
                         // The output height for conv_transpose2d is:
                         // (i_h - 1) * stride - 2 * padding + dilation * (k_h - 1) + out_padding + 1
                         let grad_h = grad.dim(2)?;
@@ -330,7 +338,7 @@ impl Tensor {
                             grad_kernel
                         };
                         *sum_grad = sum_grad.add(&grad_kernel)?;
-                        println!("[ {:} ] End of conv2d", get_vram()?);
+                        println!("[ {:} ] End of Op::Conv2D", get_vram()?);
                     }
                     Op::ConvTranspose1D { .. } => Err(Error::BackwardNotSupported {
                         op: "conv-transpose1d",
@@ -381,6 +389,7 @@ impl Tensor {
                         kernel_size,
                         stride,
                     } => {
+                        println!("[ {:} ] Start of Op::MaxPool2D", get_vram()?);
                         if kernel_size != stride {
                             crate::bail!("backward not supported for maxpool2d if ksize {kernel_size:?} != stride {stride:?}")
                         }
@@ -395,6 +404,7 @@ impl Tensor {
                         let grad_arg = ((grad * avg)?.upsample_nearest2d(h, w)? * mask)?;
                         let sum_grad = grads.or_insert(arg)?;
                         *sum_grad = sum_grad.add(&grad_arg)?;
+                        println!("[ {:} ] End of Op::MaxPool2D", get_vram()?);
                     }
                     Op::UpsampleNearest1D { arg, target_size } => {
                         let (_n, c, size) = arg.dims3()?;
@@ -413,6 +423,7 @@ impl Tensor {
                         target_h,
                         target_w,
                     } => {
+                        println!("[ {:} ] Start of Op::UpsampleNearest2D", get_vram()?);
                         let (_n, c, h, w) = arg.dims4()?;
                         if target_h % h != 0 || target_w % w != 0 {
                             crate::bail!("backward not supported for non integer upscaling factors")
@@ -428,6 +439,7 @@ impl Tensor {
                         let conv_sum = grad.conv2d(&kernel, 0, scale_h, 1, c)?;
                         let sum_grad = grads.or_insert(arg)?;
                         *sum_grad = conv_sum;
+                        println!("[ {:} ] End of Op::UpsampleNearest2D", get_vram()?);
                     }
                     Op::SliceScatter0(lhs, rhs, start_rhs) => {
                         let rhs_sum_grad = grads.or_insert(rhs)?;
@@ -463,6 +475,7 @@ impl Tensor {
                         *sum_grad = sum_grad.index_add(indexes, &grad, *dim)?;
                     }
                     Op::Matmul(lhs, rhs) => {
+                        println!("[ {:} ] Start of Op::Matmul", get_vram()?);
                         // Skipping checks, the op went ok, we can skip
                         // the matmul size checks for now.
 
@@ -473,6 +486,7 @@ impl Tensor {
                         let rhs_grad = lhs.t()?.matmul(&grad)?;
                         let rhs_sum_grad = grads.or_insert(rhs)?;
                         *rhs_sum_grad = rhs_sum_grad.add(&rhs_grad)?;
+                        println!("[ {:} ] End of Op::Matmul", get_vram()?);
                     }
                     Op::Cat(args, dim) => {
                         let mut start_idx = 0;
@@ -535,9 +549,11 @@ impl Tensor {
                         *sum_grad = sum_grad.add(&grad)?
                     }
                     Op::Affine { arg, mul, .. } => {
+                        println!("[ {:} ] Start of Op::Affine", get_vram()?);
                         let arg_grad = grad.affine(*mul, 0.)?;
                         let sum_grad = grads.or_insert(arg)?;
-                        *sum_grad = sum_grad.add(&arg_grad)?
+                        *sum_grad = sum_grad.add(&arg_grad)?;
+                        println!("[ {:} ] End of Op::Affine", get_vram()?);
                     }
                     Op::Unary(arg, UnaryOp::Log) => {
                         let sum_grad = grads.or_insert(arg)?;
@@ -563,12 +579,16 @@ impl Tensor {
                         *sum_grad = sum_grad.add(&(&grad * abs_grad)?)?
                     }
                     Op::Unary(arg, UnaryOp::Exp) => {
+                        println!("[ {:} ] Start of UnaryOp::Exp", get_vram()?);
                         let sum_grad = grads.or_insert(arg)?;
-                        *sum_grad = sum_grad.add(&(&grad * *node)?)?
+                        *sum_grad = sum_grad.add(&(&grad * *node)?)?;
+                        println!("[ {:} ] End of UnaryOp::Exp", get_vram()?);
                     }
                     Op::Unary(arg, UnaryOp::Neg) => {
+                        println!("[ {:} ] Start of UnaryOp::Neg", get_vram()?);
                         let sum_grad = grads.or_insert(arg)?;
-                        *sum_grad = sum_grad.sub(&grad)?
+                        *sum_grad = sum_grad.sub(&grad)?;
+                        println!("[ {:} ] End of UnaryOp::Neg", get_vram()?);
                     }
                     Op::Unary(arg, UnaryOp::Recip) => {
                         let sum_grad = grads.or_insert(arg)?;
@@ -640,9 +660,11 @@ impl Tensor {
                         *sum_grad = sum_grad.add(&(&grad * gelu_erf_grad)?)?;
                     }
                     Op::Unary(arg, UnaryOp::Relu) => {
+                        println!("[ {:} ] Start of UnaryOp::Relu", get_vram()?);
                         let sum_grad = grads.or_insert(arg)?;
                         let relu_grad = arg.ge(&arg.zeros_like()?)?.to_dtype(arg.dtype())?;
-                        *sum_grad = sum_grad.add(&(&grad * relu_grad)?)?
+                        *sum_grad = sum_grad.add(&(&grad * relu_grad)?)?;
+                        println!("[ {:} ] End of UnaryOp::Relu", get_vram()?);
                     }
                     Op::Unary(arg, UnaryOp::Silu) => {
                         let sum_grad = grads.or_insert(arg)?;
@@ -715,22 +737,27 @@ impl Tensor {
                         *sum_grad = sum_grad.add(&arg_grad)?
                     }
                     Op::Transpose(arg, dim1, dim2) => {
+                        println!("[ {:} ] Start of Op::Transpose", get_vram()?);
                         let arg_grad = grad.transpose(*dim1, *dim2)?;
                         let sum_grad = grads.or_insert(arg)?;
-                        *sum_grad = sum_grad.add(&arg_grad)?
+                        *sum_grad = sum_grad.add(&arg_grad)?;
+                        println!("[ {:} ] End of Op::Transpose", get_vram()?);
                     }
                     Op::Permute(arg, dims) => {
+                        println!("[ {:} ] Start of Op::Permute", get_vram()?);
                         let mut inv_dims = vec![0; dims.len()];
                         for (i, &dim_idx) in dims.iter().enumerate() {
                             inv_dims[dim_idx] = i
                         }
                         let arg_grad = grad.permute(inv_dims)?;
                         let sum_grad = grads.or_insert(arg)?;
-                        *sum_grad = sum_grad.add(&arg_grad)?
+                        *sum_grad = sum_grad.add(&arg_grad)?;
+                        println!("[ {:} ] End of Op::Permute", get_vram()?);
                     }
                 };
             }
-            println!("[ {:} ] After node iter: {} {:?}", get_vram()?, grads.keys().len(), grads.keys());
+            // println!("[ {:} ] After node iter: {} {:?}", get_vram()?, grads.keys().len(), grads.keys());
+            println!("[ {:} ] After node iter: {}", get_vram()?, grads.keys().len());
         }
 
         println!("[ {:} ]", get_vram()?);

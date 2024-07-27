@@ -43,7 +43,7 @@ pub struct Tensor_ {
 }
 impl Drop for Tensor_ {
     fn drop(&mut self) {
-        TensorTracker::instance().add_deletion(self.id);
+        TensorTracker::instance().add_deletion(self.id, Arc::downgrade(&self.storage));
     }
 }
 
@@ -167,9 +167,10 @@ pub struct TrackedTensor {
     pub dtype: DType,
     pub creation: String,
     pub deletion: Option<String>,
+    pub storage: std::sync::Weak<RwLock<Storage>>,
 }
 pub struct TensorTracker {
-    data: std::sync::Mutex<std::collections::HashMap<TensorId, TrackedTensor>>,
+    data: std::sync::Mutex<std::collections::HashMap<TensorId, Vec<TrackedTensor>>>,
 }
 impl TensorTracker {
     pub fn instance() -> &'static Self {
@@ -183,20 +184,28 @@ impl TensorTracker {
     }
     pub fn add_creation(&self, id: TensorId, shape: Shape, dtype: DType) {
         let mut c = self.data.lock().unwrap();
-        c.insert(id, TrackedTensor {
+        let v = c.entry(id).or_default();
+        v.push(TrackedTensor {
             id,
             shape,
             dtype,
             creation: format!("{:}", std::backtrace::Backtrace::force_capture()),
             deletion: None,
+            storage: std::sync::Weak::new(),
         });
     }
-    pub fn add_deletion(&self, id: TensorId) {
+    pub fn add_deletion(&self, id: TensorId, storage: std::sync::Weak<RwLock<Storage>>) {
         let mut c = self.data.lock().unwrap();
+        let v = c.get_mut(&id).expect("any deleted tensor must be created");
+        let l = v.last_mut().expect("any deleted tensor must be created");
+        if l.deletion.is_some() {
+            panic!("Deleting tensor that does not exist");
+        }
         let bt = format!("{:}", std::backtrace::Backtrace::force_capture());
-        c.get_mut(&id).expect("any deleted tensor must be created").deletion = Some(bt);
+        l.deletion = Some(bt);
+        l.storage = storage;
     }
-    pub fn data(&self) -> &std::sync::Mutex<std::collections::HashMap<TensorId, TrackedTensor>> {
+    pub fn data(&self) -> &std::sync::Mutex<std::collections::HashMap<TensorId, Vec<TrackedTensor>>> {
         &self.data
     }
 }
