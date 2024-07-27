@@ -27,6 +27,24 @@ thread_local! {
     }
 }
 
+#[derive(Debug, Default)]
+pub struct CuMem {
+    pub available: usize,
+    pub total: usize,
+}
+impl std::fmt::Display for CuMem {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::result::Result<(), std::fmt::Error> {
+        write!(fmt, "{}MiB/{}MiB", (self.total - self.available) / (1024 * 1024), self.total / (1024 * 1024))
+    }
+}
+
+#[cfg(feature = "cuda")]
+pub fn get_vram() -> crate::Result<CuMem> {
+    // return Ok(Default::default());
+    use crate::cuda_backend::cudarc;
+    return cudarc::driver::result::mem_get_info().map_err(|e| crate::Error::Cuda(Box::new(e))).map(|(available, total)| CuMem{available, total});
+}
+
 impl Tensor {
     /// Return all the nodes that lead to this value in a topologically sorted vec, the first
     /// elements having dependencies on the latter ones, e.g. the first element if any is the
@@ -164,7 +182,7 @@ impl Tensor {
         let sorted_nodes = self.sorted_nodes();
         let mut grads = GradStore::new();
         grads.insert(self, self.ones_like()?.contiguous()?);
-        println!("Before backward: {} {:?}", grads.keys().len(), grads.keys());
+        println!("[ {:} ] Before backward: {} {:?}", get_vram()?, grads.keys().len(), grads.keys());
         for node in sorted_nodes.iter() {
             if node.is_variable() {
                 continue;
@@ -180,7 +198,7 @@ impl Tensor {
             // derivatives but these are out of scope at the moment.
             let do_not_detach = CANDLE_GRAD_DO_NOT_DETACH.with(|b| *b);
             let grad = if do_not_detach { grad } else { grad.detach() };
-            println!("Detached grad:: {:?}", grad.id());
+            println!("[ {:} ] Detached grad:: {:?}", get_vram()?, grad.id());
             if let Some(op) = node.op() {
                 match op {
                     Op::Binary(lhs, rhs, BinaryOp::Add) => {
@@ -281,6 +299,7 @@ impl Tensor {
                         stride,
                         dilation,
                     } => {
+                        println!("[ {:} ] Start of conv2d", get_vram()?);
                         // The output height for conv_transpose2d is:
                         // (i_h - 1) * stride - 2 * padding + dilation * (k_h - 1) + out_padding + 1
                         let grad_h = grad.dim(2)?;
@@ -311,6 +330,7 @@ impl Tensor {
                             grad_kernel
                         };
                         *sum_grad = sum_grad.add(&grad_kernel)?;
+                        println!("[ {:} ] End of conv2d", get_vram()?);
                     }
                     Op::ConvTranspose1D { .. } => Err(Error::BackwardNotSupported {
                         op: "conv-transpose1d",
@@ -710,8 +730,10 @@ impl Tensor {
                     }
                 };
             }
-            println!("After node iter: {} {:?}", grads.keys().len(), grads.keys());
+            println!("[ {:} ] After node iter: {} {:?}", get_vram()?, grads.keys().len(), grads.keys());
         }
+
+        println!("[ {:} ]", get_vram()?);
         println!("Final grads: {} {:?}", grads.keys().len(), grads.keys());
         let mut total_size = 0;
         for k in grads.keys() {
