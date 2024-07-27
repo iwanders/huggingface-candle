@@ -58,7 +58,7 @@ impl Optimizer for SGD {
     fn step(&mut self, grads: &candle::backprop::GradStore) -> Result<()> {
         for var in self.vars.iter() {
             if let Some(grad) = grads.get(var) {
-                var.set(&var.sub(&(grad * self.learning_rate)?)?)?;
+                var.set(&var.sub(&(grad * self.learning_rate)?.detach())?.detach())?;
             }
         }
         Ok(())
