@@ -27,6 +27,20 @@ thread_local! {
     }
 }
 
+const DO_PRINTS: bool = false;
+
+#[allow(unused_macros)]
+/// Helper print macro that can be enabled or disabled.
+macro_rules! trace {
+    () => (if DO_PRINTS {println!("\n");});
+    ($($arg:tt)*) => {
+        if DO_PRINTS {
+            println!($($arg)*);
+        }
+    }
+}
+
+
 impl Tensor {
     /// Return all the nodes that lead to this value in a topologically sorted vec, the first
     /// elements having dependencies on the latter ones, e.g. the first element if any is the
@@ -164,12 +178,12 @@ impl Tensor {
         let sorted_nodes = self.sorted_nodes();
         let mut grads = GradStore::new();
         grads.insert(self, self.ones_like()?.contiguous()?);
-        println!("Before backward: {} {:?}", grads.keys().len(), grads.keys());
+        trace!("Before backward: {} {:?}", grads.keys().len(), grads.keys());
         for node in sorted_nodes.iter() {
             if node.is_variable() {
                 continue;
             }
-            println!("Remove node: {:?} {:?}", node.id(), node);
+            trace!("Remove node: {:?} {:?}", node.id(), node);
             let grad = grads
                 .remove(node)
                 .expect("candle internal error - grad not populated");
@@ -180,7 +194,7 @@ impl Tensor {
             // derivatives but these are out of scope at the moment.
             let do_not_detach = CANDLE_GRAD_DO_NOT_DETACH.with(|b| *b);
             let grad = if do_not_detach { grad } else { grad.detach() };
-            println!("Detached grad:: {:?}", grad.id());
+            trace!("Detached grad:: {:?}", grad.id());
             if let Some(op) = node.op() {
                 match op {
                     Op::Binary(lhs, rhs, BinaryOp::Add) => {
@@ -710,16 +724,16 @@ impl Tensor {
                     }
                 };
             }
-            println!("After node iter: {} {:?}", grads.keys().len(), grads.keys());
+            trace!("After node iter: {} {:?}", grads.keys().len(), grads.keys());
         }
-        println!("Final grads: {} {:?}", grads.keys().len(), grads.keys());
+        trace!("Final grads: {} {:?}", grads.keys().len(), grads.keys());
         let mut total_size = 0;
         for k in grads.keys() {
             let v = grads.get_id(k).unwrap();
             total_size += v.elem_count() * 4;
-            println!("{k:?}  {:?} cont: {}  count: {}", v, v.is_contiguous(), v.elem_count());
+            trace!("{k:?}  {:?} cont: {}  count: {}", v, v.is_contiguous(), v.elem_count());
         }
-        println!("Total size: {total_size}");
+        trace!("Total size: {total_size}");
         Ok(grads)
     }
 }
